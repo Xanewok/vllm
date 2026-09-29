@@ -8,8 +8,10 @@ first use with nvcc into a per-source-hash cache (or loaded from
 VLLM_HOST_STAGED_AR_LIB).
 
 Contract with the caller: both ranks call all_reduce() with the same sequence
-of (numel, dtype) and each rank's calls are ordered on one stream.  should_use()
-depends only on numel and dtype, so both ranks always take the same branch.
+of (numel, dtype, contiguity) and each rank's calls are ordered on one stream.
+should_use() reads only those, so both ranks take the same branch; a tensor that
+is contiguous on one rank and not on the other sends the ranks into different
+collectives and hangs.
 """
 
 from __future__ import annotations
@@ -284,7 +286,8 @@ class HostStagedAllReduce:
         )
 
     def should_use(self, inp: torch.Tensor) -> bool:
-        # Must depend only on values identical on both ranks (not on data_ptr).
+        # Must depend only on values identical on both ranks (never data_ptr); see the
+        # module contract for contiguity.
         return (
             not self.disabled
             and inp.dtype in _DTYPES
