@@ -3856,18 +3856,47 @@ class GPUModelRunner(
         num_tokens: int,
         num_reqs: int,
         force_uniform_decode: bool | None = None,
+        all_rows_decode: bool = True,
     ) -> bool:
         """Checks if it's a decode batch with same amount scheduled tokens
         across all requests.
+
+        The shape cannot tell a verify step from a prefill chunk of the same
+        length; `all_rows_decode` (see `_all_rows_decode`) says which it is.
         """
+        if force_uniform_decode is not None:
+            return force_uniform_decode
         return (
-            (
-                (max_num_scheduled_tokens == uniform_decode_query_len)
-                and (num_tokens == max_num_scheduled_tokens * num_reqs)
-            )
-            if force_uniform_decode is None
-            else force_uniform_decode
+            all_rows_decode
+            and max_num_scheduled_tokens == uniform_decode_query_len
+            and num_tokens == max_num_scheduled_tokens * num_reqs
         )
+
+    @staticmethod
+    def _all_rows_decode(
+        scheduler_output: "SchedulerOutput",
+        num_computed_tokens: np.ndarray,
+        is_hybrid: bool,
+    ) -> bool:
+        """Whether every row is one the GDN/Mamba builders build as a decode.
+
+        A FULL uniform-decode graph replays their decode/verify branch and
+        refreshes its persistent state indices only when the builder built
+        decode metadata for every row. A row it builds as a prefill -- a
+        prefill or preemption-replay chunk of exactly 1 + k tokens, or a first
+        chunk with no prior state -- would make the replay write recurrent
+        state into stale slots (vllm#49918, #55766). The draft-count test is
+        the GDN builder's own verify-row test, so the two cannot disagree.
+        """
+        if not is_hybrid:
+            return True
+        drafts = scheduler_output.scheduled_spec_decode_tokens
+        if any(
+            n != 1 + len(drafts.get(req_id, ()))
+            for req_id, n in scheduler_output.num_scheduled_tokens.items()
+        ):
+            return False
+        return bool((num_computed_tokens > 0).all())
 
     def _allow_microbatching(
         self, num_reqs: int, num_scheduled_tokens_np: np.ndarray
@@ -3929,6 +3958,7 @@ class GPUModelRunner(
         force_has_lora: bool | None = None,
         force_num_active_loras: int | None = None,
         num_encoder_reqs: int = 0,
+        all_rows_decode: bool = True,
     ) -> tuple[
         CUDAGraphMode,
         BatchDescriptor,
@@ -3942,6 +3972,7 @@ class GPUModelRunner(
             num_tokens=num_tokens,
             num_reqs=num_reqs,
             force_uniform_decode=force_uniform_decode,
+            all_rows_decode=all_rows_decode,
         )
         # Encoder-decoder models only support CG for decoder_step > 0 (no enc_output
         # is present). Also, chunked-prefill is disabled, so batch are uniform.
@@ -4256,6 +4287,11 @@ class GPUModelRunner(
                 num_encoder_reqs=len(scheduler_output.scheduled_encoder_inputs),
                 allow_microbatching=self._allow_microbatching(
                     num_reqs, num_scheduled_tokens_np
+                ),
+                all_rows_decode=self._all_rows_decode(
+                    scheduler_output,
+                    self.input_batch.num_computed_tokens_cpu[:num_reqs],
+                    self.model_config.is_hybrid,
                 ),
             )
 
