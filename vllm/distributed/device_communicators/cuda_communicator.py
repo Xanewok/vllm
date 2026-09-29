@@ -77,6 +77,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self.use_flashinfer_allreduce = use_flashinfer_allreduce
         self.use_flashinfer_pcie_ipc_allreduce = use_flashinfer_pcie_ipc_allreduce
         self.use_aiter_allreduce = use_aiter_allreduce
+        # Independent of --disable-custom-all-reduce: the no-P2P setups it serves run
+        # with custom all-reduce off.
+        use_host_staged_ar = (
+            envs.VLLM_HOST_STAGED_AR
+            and unique_name.split(":")[0] == "tp"
+            and self.world_size == 2
+            and current_platform.is_cuda()
+        )
 
         # lazy import to avoid documentation build error
         from vllm.distributed.device_communicators.custom_all_reduce import (
@@ -87,6 +95,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         )
         from vllm.distributed.device_communicators.flashinfer_pcie_ipc_all_reduce import (  # noqa: E501
             FlashInferPcieIpcAllReduce,
+        )
+        from vllm.distributed.device_communicators.host_staged_all_reduce import (
+            HostStagedAllReduce,
         )
         from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
         from vllm.distributed.device_communicators.quick_all_reduce import (
@@ -109,7 +120,13 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self.fi_ar_comm: FlashInferAllReduce | None = None
         self.fi_pcie_ipc_ar_comm: FlashInferPcieIpcAllReduce | None = None
         self.aiter_ar_comm: AiterCustomAllreduce | None = None
+        self.hs_ar_comm: HostStagedAllReduce | None = None
         self.use_aiter_ag_rs: bool = False
+
+        if use_host_staged_ar:
+            self.hs_ar_comm = HostStagedAllReduce(
+                group=self.cpu_group, device=self.device
+            )
 
         if use_torch_symm_mem and current_platform.is_cuda():
             self.symm_mem_comm = SymmMemCommunicator(
@@ -259,6 +276,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         depends on the input tensor.
         """
         all_potential_ar_backends = [
+            "HOST_STAGED",
             "FLASHINFER_PCIE_IPC",
             "FLASHINFER",
             "NCCL_SYMM_MEM",
@@ -269,6 +287,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
             "PYNCCL",
         ]
         enabled_ar_backends: list[str] = []
+        if self.hs_ar_comm is not None and not self.hs_ar_comm.disabled:
+            enabled_ar_backends.append("HOST_STAGED")
         if (
             self.fi_pcie_ipc_ar_comm is not None
             and not self.fi_pcie_ipc_ar_comm.disabled
@@ -325,6 +345,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         )
 
     def all_reduce(self, input_):
+        hs_ar_comm = self.hs_ar_comm
+        if hs_ar_comm is not None and hs_ar_comm.should_use(input_):
+            return hs_ar_comm.all_reduce(input_)
         fi_ar_comm = self.fi_ar_comm
         use_fi_ar = (
             fi_ar_comm is not None
@@ -665,6 +688,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         if self.fi_pcie_ipc_ar_comm is not None:
             self.fi_pcie_ipc_ar_comm.destroy()
             self.fi_pcie_ipc_ar_comm = None
+        if self.hs_ar_comm is not None:
+            self.hs_ar_comm.close()
+            self.hs_ar_comm = None
         if self.all2all_manager is not None:
             self.all2all_manager.destroy()
             self.all2all_manager = None  # type: ignore[assignment]
