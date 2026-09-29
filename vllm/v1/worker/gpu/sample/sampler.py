@@ -103,6 +103,13 @@ class Sampler:
         if self.trace_replay_state is not None:
             self.trace_replay_state.apply_staged_writes()
 
+    def _fast_top_k_max(self, idx_mapping_np: np.ndarray, logits: torch.Tensor) -> int:
+        # Any logprobs request keeps the existing path, including one that sets
+        # only logprob_token_ids (SamplingStates sees num_logprobs alone).
+        if self.get_logprobs_dims(idx_mapping_np) is not None:
+            return 0
+        return self.sampling_states.fast_top_k_max(idx_mapping_np, logits)
+
     def get_logprobs_dims(
         self, idx_mapping_np: np.ndarray, include_token_ids: bool = True
     ) -> tuple[int, int] | None:
@@ -225,7 +232,7 @@ class Sampler:
         fast_k = (
             0
             if skip_top_k_top_p
-            else self.sampling_states.fast_top_k_max(idx_mapping_np, logits)
+            else self._fast_top_k_max(idx_mapping_np, logits)
         )
 
         # Apply logit bias (e.g., allowed_token_ids, min_tokens) in place.
@@ -343,7 +350,7 @@ class Sampler:
         if use_flashinfer:
             sampled = flashinfer_sample(processed_logits, top_k, top_p).to(torch.int64)
         else:
-            fast_k = self.sampling_states.fast_top_k_max(idx_mapping_np, processed_logits)
+            fast_k = self._fast_top_k_max(idx_mapping_np, processed_logits)
             if fast_k:
                 # min_p was already applied by apply_sampling_params.
                 processed_logits = self.sampling_states.apply_fast_top_k_top_p(
