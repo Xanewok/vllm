@@ -3,10 +3,14 @@
 
 The kept set is the one the full-vocab kernels define, computed on candidates:
 order tokens by (logit desc, index asc); drop logit < max + log(min_p); keep the
-first k; keep token j while the renormalised mass ranked before it is < p. The
-index tie-break is the one _topk_topp_kernel applies to duplicates, so the output
-matches it token for token up to fp32 rounding of the top-p mass (the same slack
-the Triton and PyTorch paths already have between each other).
+first k; keep token j while the renormalised mass ranked before it is < p.
+
+Ties at the k-th logit: exactly k tokens are kept, lowest index first (the
+tie-break _topk_topp_kernel applies to duplicates). apply_top_k_top_p_pytorch
+keeps every logit equal to the k-th value instead, so on tied rows the two keep
+different sets. The min_p threshold (the _min_p_kernel expression) and the top-p
+mass are fp32, so a token exactly at either threshold can go the other way than
+in a float64 evaluation.
 
 Every token outside a chunk's top-KK (KK >= k_max) is outside the global top-k,
 so selecting per chunk and merging is exact. Output is written in place: kept
