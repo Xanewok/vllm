@@ -266,6 +266,12 @@ if TYPE_CHECKING:
     VLLM_ALLREDUCE_USE_SYMM_MEM: bool = True
     VLLM_ALLREDUCE_USE_FLASHINFER: bool = True
     VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC: bool = False
+    VLLM_HOST_STAGED_AR: bool = False
+    VLLM_HOST_STAGED_AR_MAX_BYTES: int = 262144
+    VLLM_HOST_STAGED_AR_BLOCKS: int = 8
+    VLLM_HOST_STAGED_AR_TIMEOUT_S: float = 0.0
+    VLLM_HOST_STAGED_AR_VARIANT: str = "classic"
+    VLLM_HOST_STAGED_AR_CHUNK_BYTES: int = 4096
     VLLM_TUNED_CONFIG_FOLDER: str | None = None
     VLLM_ENABLE_STARTUP_PLAN: bool = False
     VLLM_GPT_OSS_SYSTEM_TOOL_MCP_LABELS: set[str] = set()
@@ -1866,6 +1872,29 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC": lambda: bool(
         int(os.getenv("VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC", "0"))
     ),
+    # TP2 all-reduce staged through shared pinned host memory with in-kernel
+    # polling, for two GPUs without P2P. Inputs up to _MAX_BYTES take it, larger
+    # ones fall through to NCCL. _TIMEOUT_S > 0 traps a kernel whose peer never
+    # arrives instead of hanging (debug aid; startup skew can exceed seconds).
+    "VLLM_HOST_STAGED_AR": lambda: bool(int(os.getenv("VLLM_HOST_STAGED_AR", "0"))),
+    "VLLM_HOST_STAGED_AR_MAX_BYTES": lambda: int(
+        os.getenv("VLLM_HOST_STAGED_AR_MAX_BYTES", "262144")
+    ),
+    "VLLM_HOST_STAGED_AR_BLOCKS": lambda: int(
+        os.getenv("VLLM_HOST_STAGED_AR_BLOCKS", "8")
+    ),
+    "VLLM_HOST_STAGED_AR_TIMEOUT_S": lambda: float(
+        os.getenv("VLLM_HOST_STAGED_AR_TIMEOUT_S", "0")
+    ),
+    # "classic": one kernel stages, handshakes, sums (llama.cpp's shape). "pipe":
+    # _BLOCKS staging + _BLOCKS summing blocks with a flag per _CHUNK_BYTES, so
+    # uploads of later chunks overlap downloads of earlier ones.
+    "VLLM_HOST_STAGED_AR_VARIANT": lambda: os.getenv(
+        "VLLM_HOST_STAGED_AR_VARIANT", "classic"
+    ),
+    "VLLM_HOST_STAGED_AR_CHUNK_BYTES": lambda: int(
+        os.getenv("VLLM_HOST_STAGED_AR_CHUNK_BYTES", "4096")
+    ),
     # Experimental: use this to enable MCP tool calling for non harmony models
     "VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT": lambda: bool(
         int(os.getenv("VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT", "0"))
@@ -2264,6 +2293,13 @@ def compile_factors() -> dict[str, object]:
         "VLLM_CACHE_ROOT",
         # Runtime memory-plan persistence; does not affect compiled graphs.
         "VLLM_ENABLE_STARTUP_PLAN",
+        # Host-staged all-reduce: dispatched inside the opaque vllm::all_reduce op.
+        "VLLM_HOST_STAGED_AR",
+        "VLLM_HOST_STAGED_AR_MAX_BYTES",
+        "VLLM_HOST_STAGED_AR_BLOCKS",
+        "VLLM_HOST_STAGED_AR_TIMEOUT_S",
+        "VLLM_HOST_STAGED_AR_VARIANT",
+        "VLLM_HOST_STAGED_AR_CHUNK_BYTES",
         # Location-only derived paths: where a cache/config directory lives
         # cannot affect compiled artifacts, and hashing them means relocating
         # HOME or the XDG roots silently invalidates every compile cache
