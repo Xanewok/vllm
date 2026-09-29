@@ -481,6 +481,7 @@ class ResponsesRequest(OpenAIBaseModel):
             frequency_penalty=frequency_penalty,
             presence_penalty=presence_penalty,
             repetition_penalty=repetition_penalty,
+            min_p=default_sampling_params.get("min_p", 0.0),
             seed=self.seed,
             ignore_eos=self.ignore_eos,
             output_kind=(

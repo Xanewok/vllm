@@ -1108,7 +1108,9 @@ class SamplingParams(
             return
 
         # Some sampling parameters are not yet compatible with spec decoding.
-        if self.min_p > _SAMPLING_EPS or self.logit_bias:
+        # The V2 runner applies min_p to target logits before spec-decode verification
+        # (worker/gpu/sample/sampler.py:apply_sampling_params); V1 does not, so run V2.
+        if self.logit_bias:
             raise VLLMValidationError(
                 "The min_p and logit_bias sampling parameters "
                 "are not yet supported with speculative decoding."
