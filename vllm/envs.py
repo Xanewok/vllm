@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     VLLM_LOG_STATS_INTERVAL: float = 10.0
     VLLM_TRACE_FUNCTION: int = 0
     VLLM_USE_FLASHINFER_SAMPLER: bool = True
+    VLLM_FAST_TOPK: bool = False
     VLLM_PP_LAYER_PARTITION: str | None = None
     VLLM_CPU_KVCACHE_SPACE: int | None = 0
     VLLM_CPU_OMP_THREADS_BIND: str = "auto"
@@ -860,6 +861,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
         if "VLLM_USE_FLASHINFER_SAMPLER" in os.environ
         else True
     ),
+    # V2 sampler: candidate-based exact min_p/top-k/top-p when every top_k <= 256
+    "VLLM_FAST_TOPK": lambda: os.environ.get("VLLM_FAST_TOPK", "0") == "1",
     # Pipeline stage partition strategy
     "VLLM_PP_LAYER_PARTITION": lambda: os.getenv("VLLM_PP_LAYER_PARTITION", None),
     # (CPU backend only) CPU key-value cache space.
@@ -2264,6 +2267,8 @@ def compile_factors() -> dict[str, object]:
         "VLLM_CACHE_ROOT",
         # Runtime memory-plan persistence; does not affect compiled graphs.
         "VLLM_ENABLE_STARTUP_PLAN",
+        # Sampler-only (V2 fast top-k); traced code never reads it.
+        "VLLM_FAST_TOPK",
         # Location-only derived paths: where a cache/config directory lives
         # cannot affect compiled artifacts, and hashing them means relocating
         # HOME or the XDG roots silently invalidates every compile cache

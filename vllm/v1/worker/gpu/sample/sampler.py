@@ -222,6 +222,11 @@ class Sampler:
 
         # Copy logits to a new FP32 tensor.
         logits = torch.empty_like(logits, dtype=torch.float32).copy_(logits)
+        fast_k = (
+            0
+            if skip_top_k_top_p
+            else self.sampling_states.fast_top_k_max(idx_mapping_np, logits)
+        )
 
         # Apply logit bias (e.g., allowed_token_ids, min_tokens) in place.
         self.logit_bias_state.apply_logit_bias(
@@ -262,11 +267,19 @@ class Sampler:
             logits, expanded_idx_mapping, idx_mapping_np
         )
 
-        # Apply min_p in place.
-        self.sampling_states.apply_min_p(logits, expanded_idx_mapping, idx_mapping_np)
+        # Apply min_p in place. The fast path folds it into its select kernel.
+        if not fast_k:
+            self.sampling_states.apply_min_p(
+                logits, expanded_idx_mapping, idx_mapping_np
+            )
 
         if skip_top_k_top_p:
             return logits
+
+        if fast_k:
+            return self.sampling_states.apply_fast_top_k_top_p(
+                logits, expanded_idx_mapping, idx_mapping_np, fast_k, with_min_p=True
+            )
 
         # Apply top_k and/or top_p. This might or might not return a new tensor.
         return self.sampling_states.apply_top_k_top_p(
@@ -330,7 +343,18 @@ class Sampler:
         if use_flashinfer:
             sampled = flashinfer_sample(processed_logits, top_k, top_p).to(torch.int64)
         else:
-            processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
+            fast_k = self.sampling_states.fast_top_k_max(idx_mapping_np, processed_logits)
+            if fast_k:
+                # min_p was already applied by apply_sampling_params.
+                processed_logits = self.sampling_states.apply_fast_top_k_top_p(
+                    processed_logits,
+                    expanded_idx_mapping,
+                    idx_mapping_np,
+                    fast_k,
+                    with_min_p=False,
+                )
+            else:
+                processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
             sampled = gumbel_sample(
                 processed_logits,
                 expanded_idx_mapping,
