@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     VLLM_LOG_STATS_INTERVAL: float = 10.0
     VLLM_TRACE_FUNCTION: int = 0
     VLLM_USE_FLASHINFER_SAMPLER: bool = True
+    VLLM_USE_EXACT_SMALL_TOPK: bool = False
     VLLM_PP_LAYER_PARTITION: str | None = None
     VLLM_CPU_KVCACHE_SPACE: int | None = 0
     VLLM_CPU_OMP_THREADS_BIND: str = "auto"
@@ -874,6 +875,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
         bool(int(os.environ["VLLM_USE_FLASHINFER_SAMPLER"]))
         if "VLLM_USE_FLASHINFER_SAMPLER" in os.environ
         else True
+    ),
+    # Model Runner V2 on CUDA: when every request in the batch has
+    # 1 <= top_k <= 256, apply min_p/top-k/top-p on per-tile top-k candidates
+    # instead of the full-vocab Triton kernel.
+    "VLLM_USE_EXACT_SMALL_TOPK": lambda: bool(
+        int(os.getenv("VLLM_USE_EXACT_SMALL_TOPK", "0"))
     ),
     # Pipeline stage partition strategy
     "VLLM_PP_LAYER_PARTITION": lambda: os.getenv("VLLM_PP_LAYER_PARTITION", None),

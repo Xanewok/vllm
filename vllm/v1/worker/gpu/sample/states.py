@@ -3,11 +3,13 @@
 import numpy as np
 import torch
 
+import vllm.envs as envs
 from vllm.sampling_params import SamplingParams
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
 from vllm.v1.worker.gpu.buffer_utils import UvaBackedTensor
 from vllm.v1.worker.gpu.sample.gumbel import apply_temperature
 from vllm.v1.worker.gpu.sample.min_p import apply_min_p
+from vllm.v1.worker.gpu.sample.small_topk import SMALL_TOPK_MAX_K, small_top_k_top_p
 
 NO_LOGPROBS = -1
 _NP_INT64_MIN = np.iinfo(np.int64).min
@@ -18,6 +20,7 @@ class SamplingStates:
     def __init__(self, max_num_reqs: int, vocab_size: int):
         self.max_num_reqs = max_num_reqs
         self.vocab_size = vocab_size
+        self.use_small_topk = envs.VLLM_USE_EXACT_SMALL_TOPK
 
         self.temperature = UvaBackedTensor(max_num_reqs, dtype=torch.float32)
         self.top_k = UvaBackedTensor(max_num_reqs, dtype=torch.int32)
@@ -121,6 +124,31 @@ class SamplingStates:
         if top_k is None and top_p is None:
             return logits
         return apply_top_k_top_p(logits, top_k, top_p)
+
+    def small_top_k_max(self, idx_mapping_np: np.ndarray, logits: torch.Tensor) -> int:
+        """Batch max top_k when the small-k path applies, else 0. Host only."""
+        if not (self.use_small_topk and logits.is_cuda):
+            return 0
+        k_max = int(np.max(self.top_k.np[idx_mapping_np]))
+        return k_max if k_max <= SMALL_TOPK_MAX_K else 0
+
+    def apply_small_top_k_top_p(
+        self,
+        logits: torch.Tensor,
+        expanded_idx_mapping: torch.Tensor,
+        idx_mapping_np: np.ndarray,
+        k_max: int,
+        with_min_p: bool,
+    ) -> torch.Tensor:
+        top_p = self.top_p.gpu if np.any(self.top_p.np[idx_mapping_np] != 1.0) else None
+        min_p = (
+            self.min_p.gpu
+            if with_min_p and np.any(self.min_p.np[idx_mapping_np] != 0.0)
+            else None
+        )
+        return small_top_k_top_p(
+            logits, expanded_idx_mapping, self.top_k.gpu, top_p, min_p, k_max
+        )
 
     def any_greedy(self, idx_mapping_np: np.ndarray) -> bool:
         return bool(np.any(self.temperature.np[idx_mapping_np] == 0.0))

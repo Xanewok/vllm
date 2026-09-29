@@ -261,6 +261,17 @@ class Sampler:
             logits, expanded_idx_mapping, idx_mapping_np
         )
 
+        small_k = (
+            0
+            if skip_top_k_top_p
+            else self.sampling_states.small_top_k_max(idx_mapping_np, logits)
+        )
+        if small_k:
+            # Folds min_p in; replaces _min_p_kernel and _topk_topp_kernel.
+            return self.sampling_states.apply_small_top_k_top_p(
+                logits, expanded_idx_mapping, idx_mapping_np, small_k, with_min_p=True
+            )
+
         # Apply min_p in place.
         self.sampling_states.apply_min_p(logits, expanded_idx_mapping, idx_mapping_np)
 
@@ -339,7 +350,20 @@ class Sampler:
             else:  # Use XPU sampler
                 sampled, _ = xpu_sample(processed_logits, top_k, top_p)
         else:
-            processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
+            small_k = self.sampling_states.small_top_k_max(
+                idx_mapping_np, processed_logits
+            )
+            if small_k:
+                # min_p was already applied by apply_sampling_params.
+                processed_logits = self.sampling_states.apply_small_top_k_top_p(
+                    processed_logits,
+                    expanded_idx_mapping,
+                    idx_mapping_np,
+                    small_k,
+                    with_min_p=False,
+                )
+            else:
+                processed_logits = apply_top_k_top_p(processed_logits, top_k, top_p)
             sampled = gumbel_sample(
                 processed_logits,
                 expanded_idx_mapping,
