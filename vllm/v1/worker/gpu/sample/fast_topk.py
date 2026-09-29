@@ -16,12 +16,12 @@ sampler and gumbel sampler read.
 
 import torch
 
-from vllm.triton_utils import tl, triton
+from vllm.triton_utils import HAS_TRITON, tl, triton
 
 FAST_TOPK_MAX_K = 256
 _TILE = 4096
 _MAX_CAND = 4096
-_KEY_PAD = tl.constexpr(-(2**63))
+_KEY_PAD = tl.constexpr(-(2**63)) if HAS_TRITON else -(2**63)
 
 
 @triton.jit
